@@ -47,7 +47,7 @@ jobs:
 
       - name: Static export (out/)
         env:
-          NOTION_PAGE_ID: ${{ secrets.NOTION_PAGE_ID || vars.NOTION_PAGE_ID }}
+          NOTION_PAGE_ID: ${{ secrets.NOTION_PAGE_ID || vars.NOTION_PAGE_ID || '4c0343b68ae38218b724016e5f89d00b' }}
           NOTION_TOKEN_V2: ${{ secrets.NOTION_TOKEN_V2 }}
           EXPORT: 'true'
           BUILD_MODE: 'true'
