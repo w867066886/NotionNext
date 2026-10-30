@@ -49,6 +49,7 @@ jobs:
         env:
           NOTION_PAGE_ID: ${{ secrets.NOTION_PAGE_ID || vars.NOTION_PAGE_ID || '4c0343b68ae38218b724016e5f89d00b' }}
           NOTION_TOKEN_V2: ${{ secrets.NOTION_TOKEN_V2 }}
+          NEXT_PUBLIC_LINK: ${{ vars.NEXT_PUBLIC_LINK || 'https://www.bins-log.com' }}
           EXPORT: 'true'
           BUILD_MODE: 'true'
         run: yarn run export
