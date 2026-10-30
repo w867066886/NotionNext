@@ -1,0 +1,77 @@
+# ===== NotionNext 构建并部署到自有云服务器（JD Cloud） =====
+# 构建在 GitHub 海外 runner 上进行（能正常连 notion.so），
+# 仅导出静态文件（yarn run export -> out/），
+# 然后经 SSH + rsync 上传到服务器 /var/www/notionnext/（nginx 托管）。
+# 已弃用 EdgeOne 的构建链路。
+
+name: build-and-deploy-notionnext
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'LICENSE*'
+  workflow_dispatch:
+  schedule:
+    - cron: '30 */6 * * *'   # 每 6 小时定时刷新 Notion 内容
+
+concurrency:
+  group: deploy-static
+  cancel-in-progress: false
+
+jobs:
+  build-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # GitHub 仓库 Variables 全量注入构建环境（NEXT_PUBLIC_* 等非敏感配置,
+    # 仓库 Settings -> Secrets and variables -> Actions -> Variables 里配）。
+    env: ${{ vars }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: yarn
+
+      - name: Print page id (masked by value)
+        run: echo "NOTION_PAGE_ID is ${NOTION_PAGE_ID:+set}"
+        env:
+          NOTION_PAGE_ID: ${{ secrets.NOTION_PAGE_ID || vars.NOTION_PAGE_ID }}
+
+      - name: Install dependencies
+        run: yarn install
+
+      - name: Static export (out/)
+        env:
+          NOTION_PAGE_ID: ${{ secrets.NOTION_PAGE_ID || vars.NOTION_PAGE_ID }}
+          NOTION_TOKEN_V2: ${{ secrets.NOTION_TOKEN_V2 }}
+          EXPORT: 'true'
+          BUILD_MODE: 'true'
+        run: yarn run export
+
+      - name: Check build output
+        run: |
+          test -f out/index.html || { echo '::error::out/index.html 缺失，导出失败'; exit 1; }
+          du -sh out
+
+      # ---- 部署到云服务器（需先配置 4 个 Secrets：SSH_HOST / SSH_USER / SSH_KEY / SSH_PORT）----          
+      - name: Deploy via rsync
+        if: env.HAS_SSH_HOST != ''
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          SSH_KEY: ${{ secrets.SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          export SSHKEY=~/.ssh/deploy_key
+          ssh -i "$SSHKEY" -p "${SSH_PORT:-22}" -o StrictHostKeyChecking=accept-new "${SSH_USER}@${SSH_HOST}" true
+          rsync -az --delete -e "ssh -i $SSHKEY -p ${SSH_PORT:-22}" \
+            out/ "${SSH_USER}@${SSH_HOST}:/var/www/notionnext/"
+          echo "同步完成: out/ -> ${SSH_HOST}:/var/www/notionnext/"
