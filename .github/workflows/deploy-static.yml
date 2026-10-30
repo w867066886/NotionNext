@@ -45,6 +45,14 @@ jobs:
       - name: Install dependencies
         run: yarn install
 
+      - name: Restore Notion cache (跨构建复用,防 429 提速)
+        uses: actions/cache@v4
+        with:
+          path: notion-cache
+          key: notion-cache-${{ github.run_id }}
+          restore-keys: |
+            notion-cache-
+
       - name: Static export (out/)
         env:
           NOTION_PAGE_ID: ${{ secrets.NOTION_PAGE_ID || vars.NOTION_PAGE_ID || '4c0343b68ae38218b724016e5f89d00b' }}
@@ -52,6 +60,7 @@ jobs:
           NEXT_PUBLIC_LINK: ${{ vars.NEXT_PUBLIC_LINK || 'https://www.bins-log.com' }}
           EXPORT: 'true'
           BUILD_MODE: 'true'
+          NOTION_NEXT_NOTION_CACHE_DIR: ./notion-cache
         run: yarn run export
 
       - name: Check build output
@@ -82,7 +91,9 @@ jobs:
           ssh $OPT "$DEV" 'mkdir -p /var/www/notionnext'
           cd out
           # 8 路并行 ssh 流,分块传输+压缩,绕开单流跨洋限速
-          find . -type f | split -n l/8 - chunk.
+          NFILES=$(find . -type f | wc -l)
+          PER=$(( (NFILES + 7) / 8 ))
+          find . -type f | split -l "$PER" - chunk.
           for c in chunk.*; do
             tar cz -T "$c" | ssh $OPT "$DEV" "tar xz -C /var/www/notionnext" &
           done
