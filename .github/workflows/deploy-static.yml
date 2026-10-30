@@ -59,9 +59,15 @@ jobs:
           test -f out/index.html || { echo '::error::out/index.html 缺失，导出失败'; exit 1; }
           du -sh out
 
-      # ---- 部署到云服务器（需先配置 4 个 Secrets：SSH_HOST / SSH_USER / SSH_KEY / SSH_PORT）----          
+      # ---- 部署到云服务器（SSH_HOST/SSH_USER/SSH_KEY/SSH_PORT Secrets 已由服务器配置）----
+      - name: Deploy gate
+        id: deploy
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+        run: echo "go=${SSH_HOST:+yes}" >> "$GITHUB_OUTPUT"
+
       - name: Deploy via rsync
-        if: env.HAS_SSH_HOST != ''
+        if: steps.deploy.outputs.go == 'yes'
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_USER: ${{ secrets.SSH_USER }}
