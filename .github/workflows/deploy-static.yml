@@ -58,6 +58,7 @@ jobs:
             notion-cache-
 
       - name: Static export (out/)
+        id: build
         env:
           NOTION_PAGE_ID: ${{ secrets.NOTION_PAGE_ID || vars.NOTION_PAGE_ID || '4c0343b68ae38218b724016e5f89d00b' }}
           NOTION_TOKEN_V2: ${{ secrets.NOTION_TOKEN_V2 }}
@@ -73,15 +74,51 @@ jobs:
           du -sh out
           echo "files=$(find out -type f | wc -l)"
 
+      # ---- Cloudflare Workers 静态资源直传（Pages 新项目已并入 Workers 平台）----
+      # 先部署 Cloudflare：源站 SSH 失败不能挡住主站更新。
+      # 需要仓库 Secrets: CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID
+      - name: Cloudflare deploy gate
+        id: cf
+        env:
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: echo "go=${CF_TOKEN:+yes}" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Node for Wrangler
+        if: steps.cf.outputs.go == 'yes'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22   # Wrangler 4 要求 Node >= 22
+
+      - name: Deploy to Cloudflare Workers
+        id: cf_deploy
+        if: steps.cf.outputs.go == 'yes'
+        continue-on-error: true   # 由最后 Deployment summary 单独判定，避免失败后跳过源站部署
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          WRANGLER_SEND_METRICS: 'false'
+        run: npx --yes wrangler@4.156.0 deploy   # 读取仓库根 wrangler.jsonc，上传 out/
+
       # ---- 部署到云服务器（SSH_HOST/SSH_USER/SSH_KEY/SSH_PORT Secrets 已由服务器配置）----
+      # 源站是回退链路；SSH 失败只报警告，不阻塞 Cloudflare 主站发布。
       - name: Deploy gate
         id: deploy
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
-        run: echo "go=${SSH_HOST:+yes}" >> "$GITHUB_OUTPUT"
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_KEY: ${{ secrets.SSH_KEY }}
+        run: |
+          if [ -n "$SSH_HOST" ] && [ -n "$SSH_USER" ] && [ -n "$SSH_KEY" ]; then
+            echo "go=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "go=no" >> "$GITHUB_OUTPUT"
+            echo "::warning::SSH_HOST/SSH_USER/SSH_KEY 不完整，跳过源站同步"
+          fi
 
       - name: Deploy via parallel tar over ssh
+        id: origin_deploy
         if: steps.deploy.outputs.go == 'yes'
+        continue-on-error: true
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_USER: ${{ secrets.SSH_USER }}
@@ -91,7 +128,7 @@ jobs:
           mkdir -p ~/.ssh
           echo "$SSH_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
-          OPT="-i ~/.ssh/deploy_key -p ${SSH_PORT:-22} -o StrictHostKeyChecking=accept-new"
+          OPT="-i $HOME/.ssh/deploy_key -p ${SSH_PORT:-22} -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10"
           DEV="${SSH_USER}@${SSH_HOST}"
           ssh $OPT "$DEV" 'mkdir -p /var/www/notionnext'
           cd out
@@ -108,25 +145,24 @@ jobs:
           rsync -az --delete -e "ssh $OPT" ./ "$DEV:/var/www/notionnext/"
           echo "同步完成 out/ -> ${SSH_HOST}:/var/www/notionnext/"
 
-      # ---- Cloudflare Workers 静态资源直传（Pages 新项目已并入 Workers 平台）----
-      # 需要仓库 Secrets: CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID
-      - name: Cloudflare deploy gate
-        id: cf
+      - name: Deployment summary
+        if: always() && steps.build.outcome == 'success'
         env:
-          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: echo "go=${CF_TOKEN:+yes}" >> "$GITHUB_OUTPUT"
-
-      - name: Setup Node for Wrangler
-        if: steps.cf.outputs.go == 'yes'
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22   # Wrangler 4 要求 Node >= 22
-
-      - name: Deploy to Cloudflare Workers
-        if: steps.cf.outputs.go == 'yes'
-        continue-on-error: true   # 灰度期：CF 失败不影响自有服务器发布
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          WRANGLER_SEND_METRICS: 'false'
-        run: npx --yes wrangler@4.156.0 deploy   # 读取仓库根 wrangler.jsonc，上传 out/
+          CF_GATE: ${{ steps.cf.outputs.go }}
+          CF_OUTCOME: ${{ steps.cf_deploy.outcome }}
+          ORIGIN_GATE: ${{ steps.deploy.outputs.go }}
+          ORIGIN_OUTCOME: ${{ steps.origin_deploy.outcome }}
+        run: |
+          echo "Cloudflare gate=${CF_GATE:-no} outcome=${CF_OUTCOME:-skipped}"
+          echo "Origin gate=${ORIGIN_GATE:-no} outcome=${ORIGIN_OUTCOME:-skipped}"
+          if [ "$CF_GATE" != "yes" ]; then
+            echo "::error::CLOUDFLARE_API_TOKEN 未配置，无法部署 Cloudflare"
+            exit 1
+          fi
+          if [ "$CF_OUTCOME" != "success" ]; then
+            echo "::error::Cloudflare Workers 部署失败，请展开 Deploy to Cloudflare Workers 步骤日志"
+            exit 1
+          fi
+          if [ "$ORIGIN_GATE" = "yes" ] && [ "$ORIGIN_OUTCOME" != "success" ]; then
+            echo "::warning::源站 SSH 同步失败；Cloudflare 已独立部署，主站不受影响。请检查 SSH key/authorized_keys。"
+          fi
