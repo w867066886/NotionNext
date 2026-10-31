@@ -49,14 +49,9 @@ jobs:
       - name: Install dependencies
         run: yarn install
 
-      - name: Restore Notion cache (跨构建复用,防 429 提速)
-        uses: actions/cache@v4
-        with:
-          path: notion-cache
-          key: notion-cache-${{ github.run_id }}
-          restore-keys: |
-            notion-cache-
-
+      # 不要跨 run 恢复 notion-cache：本地文件缓存没有 TTL，
+      # global/site 数据的 key 又固定，恢复旧缓存会让构建读到陈旧的 Notion 数据。
+      # 同一次构建内部仍可用 NOTION_NEXT_NOTION_CACHE_DIR 去重，避免重复请求。
       - name: Static export (out/)
         id: build
         env:
