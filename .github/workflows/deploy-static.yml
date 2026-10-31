@@ -1,8 +1,9 @@
-# ===== NotionNext 构建并部署到自有云服务器（JD Cloud） =====
+# ===== NotionNext 构建并部署到自有云服务器（JD Cloud）+ Cloudflare Workers =====
 # 构建在 GitHub 海外 runner 上进行（能正常连 notion.so），
 # 仅导出静态文件（yarn run export -> out/），
 # 然后经 SSH + rsync 上传到服务器 /var/www/notionnext/（nginx 托管）。
-# 已弃用 EdgeOne 的构建链路。
+# 同一份 out/ 通过 Wrangler 直传 Cloudflare Workers 静态资源，避免 Cloudflare 侧构建
+# 受 20 分钟时限 / Yarn 4 兼容性影响。已弃用 EdgeOne 的构建链路。
 
 name: build-and-deploy-notionnext
 
@@ -24,6 +25,9 @@ jobs:
   build-deploy:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    permissions:
+      contents: read
+      deployments: write
     # GitHub 仓库 Variables 全量注入构建环境（NEXT_PUBLIC_* 等非敏感配置,
     # 仓库 Settings -> Secrets and variables -> Actions -> Variables 里配）。
     env: ${{ vars }}
@@ -67,6 +71,7 @@ jobs:
         run: |
           test -f out/index.html || { echo '::error::out/index.html 缺失，导出失败'; exit 1; }
           du -sh out
+          echo "files=$(find out -type f | wc -l)"
 
       # ---- 部署到云服务器（SSH_HOST/SSH_USER/SSH_KEY/SSH_PORT Secrets 已由服务器配置）----
       - name: Deploy gate
@@ -102,3 +107,26 @@ jobs:
           # 收尾:补漏 + 删除多余文件
           rsync -az --delete -e "ssh $OPT" ./ "$DEV:/var/www/notionnext/"
           echo "同步完成 out/ -> ${SSH_HOST}:/var/www/notionnext/"
+
+      # ---- Cloudflare Workers 静态资源直传（Pages 新项目已并入 Workers 平台）----
+      # 需要仓库 Secrets: CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID
+      - name: Cloudflare deploy gate
+        id: cf
+        env:
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: echo "go=${CF_TOKEN:+yes}" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Node for Wrangler
+        if: steps.cf.outputs.go == 'yes'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22   # Wrangler 4 要求 Node >= 22
+
+      - name: Deploy to Cloudflare Workers
+        if: steps.cf.outputs.go == 'yes'
+        continue-on-error: true   # 灰度期：CF 失败不影响自有服务器发布
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          WRANGLER_SEND_METRICS: 'false'
+        run: npx --yes wrangler@4.156.0 deploy   # 读取仓库根 wrangler.jsonc，上传 out/
