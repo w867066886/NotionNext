@@ -1,3 +1,7 @@
+# 注意：站点域名由 Notion「配置中心 / CONFIG-TABLE」里的 LINK 决定，
+# 其优先级高于 NEXT_PUBLIC_LINK（见 lib/db/SiteDataApi.js: defaultLink = NOTION_CONFIG?.LINK || BLOG.LINK）。
+# 2026-11-08 已把该配置从 http://preview.tangly1024.com 改为 https://www.bins-log.com，
+# 否则 robots.txt / sitemap.xml / canonical 会全部指向主题作者的预览站。
 # ===== NotionNext 构建并部署到自有云服务器（JD Cloud）+ Cloudflare Workers =====
 # 构建在 GitHub 海外 runner 上进行（能正常连 notion.so），
 # 仅导出静态文件（yarn run export -> out/），
